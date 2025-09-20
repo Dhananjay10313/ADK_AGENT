@@ -60,7 +60,7 @@ root_agent = Agent(
     
     1. `rag_query`: Query a corpus to answer questions
        - Parameters:
-         - corpus_name: The name of the corpus to query (required, but can be empty to use current corpus), for generating testcases for the software requirements, use the compliance and the requirements corpus and add the software requirements to the requirements corpus
+         - corpus_name: The name of the corpus to query (required, but can be empty to use current corpus), for generating testcases for the software requirements, compliance corpus must be used. Use the requirements corpus for follow up queries. Add the software requirements to the requirements corpus.
          - query: The text question to ask
     
     2. `list_corpora`: List all available corpora
