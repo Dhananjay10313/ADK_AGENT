@@ -1,8 +1,11 @@
+# rag_query_multi.py
 """
-Tool for querying Vertex AI RAG corpora and retrieving relevant information.
+Multi-corpus RAG query tool for Vertex AI RAG Engine.
+Drop-in compatible with your existing patterns; adds support for multiple corpora.
 """
 
 import logging
+from typing import List, Dict, Any
 
 from google.adk.tools.tool_context import ToolContext
 from vertexai import rag
@@ -11,102 +14,120 @@ from ..config import (
     DEFAULT_DISTANCE_THRESHOLD,
     DEFAULT_TOP_K,
 )
+
 from .utils import check_corpus_exists, get_corpus_resource_name
 
 
 def rag_query(
-    corpus_name: str,
+    corpora: List[str],  # display names; may be empty to use current_corpus
     query: str,
     tool_context: ToolContext,
-) -> dict:
+) -> Dict[str, Any]:
     """
-    Query a Vertex AI RAG corpus with a user question and return relevant information.
+    Query one or more Vertex AI RAG corpora and return aggregated results.
 
     Args:
-        corpus_name (str): The name of the corpus to query. If empty, the current corpus will be used.
-                          Preferably use the resource_name from list_corpora results.
-        query (str): The text query to search for in the corpus
-        tool_context (ToolContext): The tool context
+      corpora: List of corpus display names. If empty, uses tool_context.state["current_corpus"].
+      query: User query text
+      tool_context: ADK ToolContext
 
     Returns:
-        dict: The query results and status
+      dict: status, message, corpora, results, results_count
     """
     try:
+        # Resolve default from state
+        if not corpora:
+            current = tool_context.state.get("current_corpus")
+            corpora = [current] if current else []
 
-        # Check if the corpus exists
-        if not check_corpus_exists(corpus_name, tool_context):
+        if not corpora:
             return {
                 "status": "error",
-                "message": f"Corpus '{corpus_name}' does not exist. Please create it first using the create_corpus tool.",
+                "message": "No corpus specified and no current corpus set.",
                 "query": query,
-                "corpus_name": corpus_name,
+                "corpora": corpora,
+                "results": [],
+                "results_count": 0,
             }
 
-        # Get the corpus resource name
-        corpus_resource_name = get_corpus_resource_name(corpus_name)
+        # Validate and resolve resource names
+        valid_display_names: List[str] = []
+        resources: List[rag.RagResource] = []
+        invalid: List[str] = []
 
-        # Configure retrieval parameters
+        for name in corpora:
+            if not check_corpus_exists(name, tool_context):
+                invalid.append(name)
+                continue
+            rn = get_corpus_resource_name(name)
+            valid_display_names.append(name)
+            resources.append(rag.RagResource(rag_corpus=rn))
+
+        if not resources:
+            return {
+                "status": "error",
+                "message": f"No valid corpora found. Invalid: {invalid}",
+                "query": query,
+                "corpora": corpora,
+                "results": [],
+                "results_count": 0,
+            }
+
         rag_retrieval_config = rag.RagRetrievalConfig(
             top_k=DEFAULT_TOP_K,
             filter=rag.Filter(vector_distance_threshold=DEFAULT_DISTANCE_THRESHOLD),
         )
 
-        # Perform the query
-        print("Performing retrieval query...")
+        # Single retrieval across multiple corpora
         response = rag.retrieval_query(
-            rag_resources=[
-                rag.RagResource(
-                    rag_corpus=corpus_resource_name,
-                )
-            ],
+            rag_resources=resources,
             text=query,
             rag_retrieval_config=rag_retrieval_config,
         )
 
-        # Process the response into a more usable format
-        results = []
-        if hasattr(response, "contexts") and response.contexts:
-            for ctx_group in response.contexts.contexts:
-                result = {
-                    "source_uri": (
-                        ctx_group.source_uri if hasattr(ctx_group, "source_uri") else ""
-                    ),
-                    "source_name": (
-                        ctx_group.source_display_name
-                        if hasattr(ctx_group, "source_display_name")
-                        else ""
-                    ),
-                    "text": ctx_group.text if hasattr(ctx_group, "text") else "",
-                    "score": ctx_group.score if hasattr(ctx_group, "score") else 0.0,
-                }
-                results.append(result)
+        results: List[Dict[str, Any]] = []
+        # Adapt to observed response shape in your current code
+        # Prefer a robust parse that works if response.contexts is either a list or an object
+        ctxs = getattr(response, "contexts", None)
+        if ctxs:
+            # Try iterable of context objects
+            iterable = getattr(ctxs, "contexts", ctxs)
+            for ctx in iterable:
+                results.append({
+                    "source_uri": getattr(ctx, "source_uri", "") or "",
+                    "source_name": getattr(ctx, "source_display_name", "") or "",
+                    "text": getattr(ctx, "text", "") or "",
+                    "score": getattr(ctx, "score", 0.0) or 0.0,
+                })
 
-        # If we didn't find any results
         if not results:
             return {
                 "status": "warning",
-                "message": f"No results found in corpus '{corpus_name}' for query: '{query}'",
+                "message": f"No results found in corpora {valid_display_names} for query.",
                 "query": query,
-                "corpus_name": corpus_name,
+                "corpora": valid_display_names,
+                "invalid_corpora": invalid,
                 "results": [],
                 "results_count": 0,
             }
 
         return {
             "status": "success",
-            "message": f"Successfully queried corpus '{corpus_name}'",
+            "message": f"Successfully queried corpora {valid_display_names}.",
             "query": query,
-            "corpus_name": corpus_name,
+            "corpora": valid_display_names,
+            "invalid_corpora": invalid,
             "results": results,
             "results_count": len(results),
         }
 
     except Exception as e:
-        error_msg = f"Error querying corpus: {str(e)}"
-        logging.error(error_msg)
+        logging.error("Multi-corpus query error: %s", e)
         return {
             "status": "error",
-            "message": error_msg,
+            "message": f"Error querying corpora: {str(e)}",
             "query": query,
-            "corpus_name": corpus_name,
+            "corpora": corpora,
+            "results": [],
+            "results_count": 0,
         }
